@@ -1,0 +1,19 @@
+[Unit]
+Description=IOC Hunter Streamlit App
+After=network.target
+
+[Service]
+Type=simple
+User=iochunter
+WorkingDirectory=/opt/ioc-hunter
+EnvironmentFile=/opt/ioc-hunter/.env
+ExecStart=/opt/ioc-hunter/venv/bin/python -m streamlit run app.py \
+    --server.port 8501 \
+    --server.address 127.0.0.1 \
+    --server.headless true \
+    --browser.gatherUsageStats false
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

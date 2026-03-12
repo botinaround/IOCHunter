@@ -1,0 +1,24 @@
+# Secrets — never commit these
+.env
+*.env
+
+# Test output files
+*.json
+*.csv
+*.md
+!README.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# Playwright browser cache
+.playwright/
+
+# OS
+.DS_Store
+Thumbs.db
