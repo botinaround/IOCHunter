@@ -33,11 +33,53 @@ def init_db():
                 UNIQUE(username, url, report_type)
             )
         """)
-        # Migrate existing tables that don't have the username column
-        try:
-            conn.execute("ALTER TABLE cache ADD COLUMN username TEXT NOT NULL DEFAULT 'anonymous'")
-        except Exception:
-            pass
+
+        # Check whether the existing table has the old UNIQUE(url, report_type)
+        # constraint. If so, rebuild the table with the new constraint.
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='cache'"
+        ).fetchone()
+        table_sql = (row[0] or "") if row else ""
+
+        needs_rebuild = (
+            "unique(url, report_type)" in table_sql.lower()
+            or (
+                "unique(username, url, report_type)" not in table_sql.lower()
+                and "username" not in table_sql.lower()
+            )
+        )
+
+        if needs_rebuild:
+            # Add username column if missing (safe to call even if it exists)
+            try:
+                conn.execute(
+                    "ALTER TABLE cache ADD COLUMN username TEXT NOT NULL DEFAULT 'anonymous'"
+                )
+            except Exception:
+                pass
+
+            # Rebuild: copy into a new table with the correct UNIQUE constraint
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS cache_new (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username     TEXT NOT NULL DEFAULT 'anonymous',
+                    url          TEXT NOT NULL,
+                    report_type  TEXT NOT NULL,
+                    result_json  TEXT NOT NULL,
+                    created_at   TEXT NOT NULL,
+                    expires_at   TEXT NOT NULL,
+                    UNIQUE(username, url, report_type)
+                )
+            """)
+            conn.execute("""
+                INSERT OR IGNORE INTO cache_new
+                    (id, username, url, report_type, result_json, created_at, expires_at)
+                SELECT id, username, url, report_type, result_json, created_at, expires_at
+                FROM cache
+            """)
+            conn.execute("DROP TABLE cache")
+            conn.execute("ALTER TABLE cache_new RENAME TO cache")
+
         conn.commit()
 
 
