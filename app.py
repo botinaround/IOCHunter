@@ -164,6 +164,11 @@ if not st.session_state.get("authentication_status"):
     </p>
     """, unsafe_allow_html=True)
 
+    _, link_col, _ = st.columns([1, 2, 1])
+    with link_col:
+        if st.button("Privacy Policy", use_container_width=True, type="secondary"):
+            st.switch_page("pages/2_Privacy_Policy.py")
+
     st.stop()
 
 # ---------------------------------------------------------------------------
