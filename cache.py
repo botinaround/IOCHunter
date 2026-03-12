@@ -1,6 +1,7 @@
 """
 SQLite cache for IOC Hunter results.
-Keyed on (url, report_type) with a 7-day TTL.
+Keyed on (username, url, report_type) with a 7-day TTL.
+Each user only sees and retrieves their own cached entries.
 """
 
 import sqlite3
@@ -23,93 +24,119 @@ def init_db():
         conn.execute("""
             CREATE TABLE IF NOT EXISTS cache (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                username     TEXT NOT NULL DEFAULT 'anonymous',
                 url          TEXT NOT NULL,
                 report_type  TEXT NOT NULL,
                 result_json  TEXT NOT NULL,
                 created_at   TEXT NOT NULL,
                 expires_at   TEXT NOT NULL,
-                UNIQUE(url, report_type)
+                UNIQUE(username, url, report_type)
             )
         """)
+        # Migrate existing tables that don't have the username column
+        try:
+            conn.execute("ALTER TABLE cache ADD COLUMN username TEXT NOT NULL DEFAULT 'anonymous'")
+        except Exception:
+            pass
         conn.commit()
 
 
-def get_cached(url: str, report_type: str) -> dict | None:
-    """Return cached result if it exists and hasn't expired, else None."""
+def get_cached(url: str, report_type: str, username: str) -> dict | None:
+    """Return cached result for this user if it exists and hasn't expired, else None."""
     init_db()
     now = datetime.datetime.utcnow().isoformat()
     with _connect() as conn:
         row = conn.execute(
-            "SELECT result_json, expires_at FROM cache WHERE url=? AND report_type=?",
-            (url, report_type),
+            """SELECT result_json, expires_at FROM cache
+               WHERE username=? AND url=? AND report_type=?""",
+            (username, url, report_type),
         ).fetchone()
     if row and row["expires_at"] > now:
         return json.loads(row["result_json"])
     return None
 
 
-def save_cache(url: str, report_type: str, result: dict):
-    """Insert or replace a cache entry with a fresh 7-day TTL."""
+def save_cache(url: str, report_type: str, result: dict, username: str):
+    """Insert or replace a cache entry for this user with a fresh 7-day TTL."""
     init_db()
     now = datetime.datetime.utcnow()
     expires = (now + datetime.timedelta(days=CACHE_TTL_DAYS)).isoformat()
     with _connect() as conn:
         conn.execute(
             """
-            INSERT INTO cache (url, report_type, result_json, created_at, expires_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(url, report_type) DO UPDATE SET
+            INSERT INTO cache (username, url, report_type, result_json, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(username, url, report_type) DO UPDATE SET
                 result_json = excluded.result_json,
                 created_at  = excluded.created_at,
                 expires_at  = excluded.expires_at
             """,
-            (url, report_type, json.dumps(result), now.isoformat(), expires),
+            (username, url, report_type, json.dumps(result), now.isoformat(), expires),
         )
         conn.commit()
 
 
-def delete_entry(entry_id: int):
-    """Delete a single cache entry by ID."""
+def delete_entry(entry_id: int, username: str):
+    """Delete a cache entry only if it belongs to this user."""
     init_db()
     with _connect() as conn:
-        conn.execute("DELETE FROM cache WHERE id=?", (entry_id,))
+        conn.execute("DELETE FROM cache WHERE id=? AND username=?", (entry_id, username))
         conn.commit()
 
 
-def clear_expired():
-    """Delete all entries past their expiry date."""
+def clear_expired(username: str):
+    """Delete this user's expired entries."""
     init_db()
     now = datetime.datetime.utcnow().isoformat()
     with _connect() as conn:
-        cur = conn.execute("DELETE FROM cache WHERE expires_at < ?", (now,))
+        cur = conn.execute(
+            "DELETE FROM cache WHERE username=? AND expires_at < ?", (username, now)
+        )
         conn.commit()
         return cur.rowcount
 
 
-def clear_all():
-    """Wipe the entire cache."""
+def clear_all(username: str):
+    """Wipe all cache entries belonging to this user."""
     init_db()
     with _connect() as conn:
-        conn.execute("DELETE FROM cache")
+        conn.execute("DELETE FROM cache WHERE username=?", (username,))
         conn.commit()
 
 
-def get_all_entries() -> list[dict]:
-    """Return all cache entries ordered by most recent first."""
+def get_all_entries(username: str) -> list[dict]:
+    """Return this user's cache entries ordered by most recent first."""
     init_db()
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT id, url, report_type, created_at, expires_at FROM cache ORDER BY created_at DESC"
+            """SELECT id, username, url, report_type, created_at, expires_at
+               FROM cache WHERE username=? ORDER BY created_at DESC""",
+            (username,),
         ).fetchall()
     return [dict(r) for r in rows]
 
 
-def get_stats() -> dict:
-    """Return summary stats for the cache."""
+def get_cached_result_for_entry(entry_id: int, username: str) -> dict | None:
+    """Fetch the full result JSON for a specific cache entry owned by this user."""
+    init_db()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT result_json FROM cache WHERE id=? AND username=?",
+            (entry_id, username),
+        ).fetchone()
+    return json.loads(row["result_json"]) if row else None
+
+
+def get_stats(username: str) -> dict:
+    """Return summary stats for this user's cache."""
     init_db()
     now = datetime.datetime.utcnow().isoformat()
     with _connect() as conn:
-        total = conn.execute("SELECT COUNT(*) FROM cache").fetchone()[0]
-        active = conn.execute("SELECT COUNT(*) FROM cache WHERE expires_at > ?", (now,)).fetchone()[0]
+        total = conn.execute(
+            "SELECT COUNT(*) FROM cache WHERE username=?", (username,)
+        ).fetchone()[0]
+        active = conn.execute(
+            "SELECT COUNT(*) FROM cache WHERE username=? AND expires_at > ?", (username, now)
+        ).fetchone()[0]
         expired = total - active
     return {"total": total, "active": active, "expired": expired}

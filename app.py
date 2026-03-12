@@ -630,7 +630,7 @@ if run_button:
         cached_url = url_input.strip()
         if not cached_url.startswith(("http://", "https://")):
             cached_url = "https://" + cached_url
-        cached = get_cached(cached_url, report_type)
+        cached = get_cached(cached_url, report_type, st.session_state.get("username", "anonymous"))
         if cached:
             result = cached
             from_cache = True
@@ -717,7 +717,7 @@ if run_button:
 
             # Save to cache (URL mode only)
             if mode == "Scrape URL":
-                save_cache(url, report_type, result)
+                save_cache(url, report_type, result, st.session_state.get("username", "anonymous"))
 
             status.update(label="Analysis complete!", state="complete", expanded=False)
 

@@ -5,7 +5,7 @@ IOC Hunter — Cache Viewer
 import json
 import datetime
 import streamlit as st
-from cache import get_all_entries, get_stats, delete_entry, clear_expired, clear_all, get_cached
+from cache import get_all_entries, get_stats, delete_entry, clear_expired, clear_all, get_cached_result_for_entry
 
 st.set_page_config(page_title="Cache Viewer — IOC Hunter", page_icon="🗄️", layout="wide")
 
@@ -14,11 +14,13 @@ if not st.session_state.get("authentication_status"):
     st.warning("Please log in from the main page first.")
     st.stop()
 
+username = st.session_state.get("username", "anonymous")
+
 st.title("🗄️ Cache Viewer")
 st.caption("Browse, inspect, and manage cached analysis results.")
 
 # --- Stats ---
-stats = get_stats()
+stats = get_stats(username)
 col1, col2, col3 = st.columns(3)
 col1.metric("Total Entries", stats["total"])
 col2.metric("Active (not expired)", stats["active"])
@@ -30,19 +32,19 @@ st.divider()
 mgmt_col1, mgmt_col2 = st.columns([1, 1])
 with mgmt_col1:
     if st.button("🧹 Clear Expired Entries", use_container_width=True):
-        removed = clear_expired()
+        removed = clear_expired(username)
         st.success(f"Removed {removed} expired entries.")
         st.rerun()
 with mgmt_col2:
     if st.button("🗑️ Clear Entire Cache", type="secondary", use_container_width=True):
-        clear_all()
+        clear_all(username)
         st.success("Cache cleared.")
         st.rerun()
 
 st.divider()
 
 # --- Entry table ---
-entries = get_all_entries()
+entries = get_all_entries(username)
 
 if not entries:
     st.info("No cached entries yet. Run an analysis on the main page to populate the cache.")
@@ -72,7 +74,7 @@ else:
             col_c.markdown(f"**Expires:** {expires}")
 
             # Load and show the result
-            result = get_cached(entry["url"], entry["report_type"])
+            result = get_cached_result_for_entry(entry["id"], username)
             if result:
                 tab_preview, tab_json = st.tabs(["Preview", "Raw JSON"])
 
@@ -97,6 +99,6 @@ else:
                 st.json({"id": entry["id"], "url": entry["url"], "report_type": entry["report_type"]})
 
             if st.button(f"🗑️ Delete this entry", key=f"del_{entry['id']}"):
-                delete_entry(entry["id"])
+                delete_entry(entry["id"], username)
                 st.success("Entry deleted.")
                 st.rerun()
