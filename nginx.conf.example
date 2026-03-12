@@ -1,0 +1,61 @@
+# /etc/nginx/sites-available/ioc-hunter
+#
+# Prerequisites:
+#   sudo apt install nginx certbot python3-certbot-nginx
+#   sudo certbot --nginx -d yourdomain.com
+
+server {
+    listen 80;
+    server_name yourdomain.com;
+    # Redirect all HTTP to HTTPS
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name yourdomain.com;
+
+    # Managed by Certbot
+    ssl_certificate     /etc/letsencrypt/live/yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;
+    include             /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam         /etc/letsencrypt/ssl-dhparams.pem;
+
+    # Security headers
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Frame-Options DENY always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy no-referrer always;
+
+    # Block direct access to .env and other sensitive files
+    location ~ /\.(env|git|service) {
+        deny all;
+        return 404;
+    }
+
+    # Proxy to Streamlit (HTTP)
+    location / {
+        proxy_pass         http://127.0.0.1:8501;
+        proxy_http_version 1.1;
+
+        proxy_set_header   Upgrade $http_upgrade;
+        proxy_set_header   Connection "upgrade";
+        proxy_set_header   Host $host;
+        proxy_set_header   X-Real-IP $remote_addr;
+        proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+
+        # Required for Streamlit's event stream
+        proxy_read_timeout 86400;
+        proxy_buffering    off;
+    }
+
+    # Streamlit WebSocket endpoint
+    location /_stcore/stream {
+        proxy_pass         http://127.0.0.1:8501/_stcore/stream;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade $http_upgrade;
+        proxy_set_header   Connection "upgrade";
+        proxy_read_timeout 86400;
+    }
+}
