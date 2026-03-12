@@ -50,7 +50,6 @@ def require_auth():
     if st.session_state.get("authenticated"):
         return
 
-    st.set_page_config(page_title="IOC Hunter — Login", page_icon="🔒", layout="centered")
     st.title("🔒 IOC Hunter")
     st.caption("Enter your API key to continue.")
 
@@ -68,10 +67,8 @@ def require_auth():
     st.stop()
 
 # ---------------------------------------------------------------------------
-# Page config + auth gate
+# Page config — must be the very first st call, before auth gate
 # ---------------------------------------------------------------------------
-
-require_auth()
 
 st.set_page_config(
     page_title="IOC Hunter",
@@ -79,6 +76,8 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+require_auth()
 
 # ---------------------------------------------------------------------------
 # Sidebar — inputs
