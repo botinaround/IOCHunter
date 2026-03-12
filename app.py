@@ -293,7 +293,7 @@ if run_button:
                 result_holder = {}
 
                 def run_scrape():
-                    loop = asyncio.ProactorEventLoop()
+                    loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     try:
                         result_holder["data"] = loop.run_until_complete(scrape_page(url))
