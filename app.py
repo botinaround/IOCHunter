@@ -478,6 +478,11 @@ if run_button:
         st.error("Please paste some article text in the sidebar.")
         st.stop()
 
+    # Clear previous result when a new run starts
+    st.session_state.pop("result", None)
+    st.session_state.pop("result_url", None)
+    st.session_state.pop("result_report_type", None)
+
     result = None
     from_cache = False
 
@@ -574,15 +579,26 @@ if run_button:
 
             status.update(label="Analysis complete!", state="complete", expanded=False)
 
-    if report_type == "Technical IOC Report":
+        # Persist result in session state so interactions don't wipe it
+        st.session_state["result"] = result
+        st.session_state["result_url"] = url
+        st.session_state["result_report_type"] = report_type
+
+# Render whatever is in session state (survives button clicks / radio changes)
+result = st.session_state.get("result")
+url = st.session_state.get("result_url", "")
+saved_report_type = st.session_state.get("result_report_type", report_type)
+
+if result:
+    if saved_report_type == "Technical IOC Report":
         render_results(result, url)
-    elif report_type == "Threat Hunt Report":
+    elif saved_report_type == "Threat Hunt Report":
         render_threat_hunt(result)
     else:
         render_executive(result)
 
     # --- Download buttons ---
-    if result and dl_json:
+    if dl_json:
         st.divider()
         st.subheader("Download Results")
         dl_cols = st.columns(3)
@@ -595,7 +611,7 @@ if run_button:
             use_container_width=True,
         )
 
-        if report_type == "Technical IOC Report":
+        if saved_report_type == "Technical IOC Report":
             if dl_csv:
                 dl_cols[1].download_button(
                     label="Download CSV",
