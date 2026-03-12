@@ -18,8 +18,71 @@ import csv
 import io
 import argparse
 import datetime
+import os
 import anthropic
+import openai
 from playwright.async_api import async_playwright
+
+# ---------------------------------------------------------------------------
+# AI client helpers
+# ---------------------------------------------------------------------------
+
+def _stream_anthropic(system: str, user_message: str, api_key: str, label: str) -> str:
+    """Stream a response from Claude and return the full text."""
+    key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+    client = anthropic.Anthropic(api_key=key)
+    with client.messages.stream(
+        model="claude-opus-4-6",
+        max_tokens=8096,
+        thinking={"type": "adaptive"},
+        system=system,
+        messages=[{"role": "user", "content": user_message}],
+    ) as stream:
+        raw = ""
+        print(f"[*] {label}", end="", flush=True)
+        for text in stream.text_stream:
+            raw += text
+            print(".", end="", flush=True)
+        print(" done")
+    return raw
+
+
+def _call_openai(system: str, user_message: str, api_key: str, label: str) -> str:
+    """Call GPT-4o and return the full response text."""
+    key = api_key or os.environ.get("OPENAI_API_KEY", "")
+    client = openai.OpenAI(api_key=key)
+    print(f"[*] {label}", end="", flush=True)
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        max_tokens=8096,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_message},
+        ],
+    )
+    print(" done")
+    return response.choices[0].message.content
+
+
+def _run_ai(system: str, user_message: str, provider: str, api_key: str, label: str) -> str:
+    """Route to the correct AI provider and return raw text."""
+    if provider == "openai":
+        return _call_openai(system, user_message, api_key, label)
+    return _stream_anthropic(system, user_message, api_key, label)
+
+
+def _parse_json(raw: str) -> dict:
+    """Strip markdown fences and parse JSON from an AI response."""
+    try:
+        clean = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
+        clean = re.sub(r"\s*```$", "", clean.strip(), flags=re.MULTILINE)
+        return json.loads(clean)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if match:
+            return json.loads(match.group(0))
+        print("[!] Warning: Could not parse AI JSON response", file=sys.stderr)
+        return {"raw_response": raw}
 
 
 # ---------------------------------------------------------------------------
@@ -187,10 +250,9 @@ async def scrape_page(url: str) -> dict:
 # Claude IOC analysis
 # ---------------------------------------------------------------------------
 
-def analyze_iocs_with_claude(scraped: dict, pre_extracted: dict, context: str) -> dict:
-    """Send scraped content + pre-extracted candidates to Claude for deep IOC analysis."""
-    client = anthropic.Anthropic()
-
+def analyze_iocs_with_claude(scraped: dict, pre_extracted: dict, context: str,
+                              provider: str = "anthropic", api_key: str = "") -> dict:
+    """Extract IOCs using the selected AI provider."""
     pre_extracted_str = ""
     if pre_extracted:
         pre_extracted_str = "\n\nREGEX PRE-EXTRACTED CANDIDATES (may contain false positives):\n"
@@ -225,33 +287,19 @@ Extract ALL Indicators of Compromise (IOCs) from the above content and return th
     {{"id": "T1234", "name": "technique name", "context": "how it was used"}}
   ],
   "iocs": {{
-    "ipv4": [
-      {{"value": "1.2.3.4", "context": "C2 server", "confidence": "high|medium|low"}}
-    ],
+    "ipv4": [{{"value": "1.2.3.4", "context": "C2 server", "confidence": "high|medium|low"}}],
     "ipv6": [],
-    "domains": [
-      {{"value": "evil.com", "context": "phishing domain", "confidence": "high|medium|low"}}
-    ],
-    "urls": [
-      {{"value": "https://evil.com/path", "context": "payload delivery", "confidence": "high|medium|low"}}
-    ],
-    "md5": [
-      {{"value": "abc123...", "context": "dropper", "confidence": "high|medium|low"}}
-    ],
+    "domains": [{{"value": "evil.com", "context": "phishing domain", "confidence": "high|medium|low"}}],
+    "urls": [{{"value": "https://evil.com/path", "context": "payload delivery", "confidence": "high|medium|low"}}],
+    "md5": [{{"value": "abc123...", "context": "dropper", "confidence": "high|medium|low"}}],
     "sha1": [],
-    "sha256": [
-      {{"value": "abc123...", "context": "ransomware binary", "confidence": "high|medium|low"}}
-    ],
+    "sha256": [{{"value": "abc123...", "context": "ransomware binary", "confidence": "high|medium|low"}}],
     "sha512": [],
     "emails": [],
-    "cves": [
-      {{"value": "CVE-2024-1234", "context": "exploited vulnerability", "confidence": "high|medium|low"}}
-    ],
+    "cves": [{{"value": "CVE-2024-1234", "context": "exploited vulnerability", "confidence": "high|medium|low"}}],
     "registry_keys": [],
     "file_paths": [],
-    "filenames": [
-      {{"value": "malware.exe", "context": "dropper dropped by loader", "confidence": "high|medium|low"}}
-    ],
+    "filenames": [{{"value": "malware.exe", "context": "dropper dropped by loader", "confidence": "high|medium|low"}}],
     "mutexes": [],
     "user_agents": [],
     "bitcoin_addresses": [],
@@ -268,54 +316,29 @@ IMPORTANT:
 - Refang any defanged IOCs (e.g. 1[.]2[.]3[.]4 → 1.2.3.4, hxxps → https)
 - Include ONLY confirmed IOCs, not examples or hypotheticals
 - Assign confidence based on how explicitly the source attributes the IOC
-- For filenames: extract any specific file names mentioned (e.g. SumatraPDF.exe, DWrite.dll, payload.zip) including those inside archives, dropped files, or tools used by the attacker
+- For filenames: extract any specific file names mentioned including those inside archives, dropped files, or tools used by the attacker
 - Return ONLY the JSON object, no markdown fences or extra text"""
 
-    print("[*] Sending to Claude for IOC extraction...")
+    system = (
+        "You are a senior threat intelligence analyst specializing in IOC extraction "
+        "and malware analysis. You extract precise, actionable indicators from threat "
+        "reports, blog posts, and security advisories. You always refang defanged IOCs, "
+        "assign confidence levels based on source attribution, and never include false "
+        "positives or generic infrastructure. Return only valid JSON."
+    )
 
-    with client.messages.stream(
-        model="claude-opus-4-6",
-        max_tokens=8096,
-        thinking={"type": "adaptive"},
-        system=(
-            "You are a senior threat intelligence analyst specializing in IOC extraction "
-            "and malware analysis. You extract precise, actionable indicators from threat "
-            "reports, blog posts, and security advisories. You always refang defanged IOCs, "
-            "assign confidence levels based on source attribution, and never include false "
-            "positives or generic infrastructure. Return only valid JSON."
-        ),
-        messages=[{"role": "user", "content": user_message}],
-    ) as stream:
-        raw = ""
-        print("[*] Extracting IOCs", end="", flush=True)
-        for text in stream.text_stream:
-            raw += text
-            print(".", end="", flush=True)
-        print(" done")
-
-    # Parse JSON from Claude's response
-    try:
-        # Strip any accidental markdown fences
-        clean = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
-        clean = re.sub(r"\s*```$", "", clean.strip(), flags=re.MULTILINE)
-        return json.loads(clean)
-    except json.JSONDecodeError:
-        # Attempt to extract just the JSON object
-        match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if match:
-            return json.loads(match.group(0))
-        print("[!] Warning: Could not parse Claude's JSON response", file=sys.stderr)
-        return {"raw_response": raw}
+    print("[*] Sending to AI for IOC extraction...")
+    raw = _run_ai(system, user_message, provider, api_key, "Extracting IOCs")
+    return _parse_json(raw)
 
 
 # ---------------------------------------------------------------------------
 # Threat Hunt report
 # ---------------------------------------------------------------------------
 
-def analyze_threat_hunt_with_claude(scraped: dict, pre_extracted: dict, context: str) -> dict:
-    """Generate a structured threat hunt report with hypotheses, steps, and detection guidance."""
-    client = anthropic.Anthropic()
-
+def analyze_threat_hunt_with_claude(scraped: dict, pre_extracted: dict, context: str,
+                                     provider: str = "anthropic", api_key: str = "") -> dict:
+    """Generate a structured threat hunt report using the selected AI provider."""
     pre_extracted_str = ""
     if pre_extracted:
         pre_extracted_str = "\n\nREGEX PRE-EXTRACTED CANDIDATES:\n"
@@ -342,9 +365,7 @@ Produce a structured threat hunting report as a valid JSON object with this exac
   "threat_actor": "threat actor name or null",
   "malware_families": ["list of malware names"],
   "priority": "critical|high|medium|low",
-  "hunting_hypotheses": [
-    "An attacker is using X technique to achieve Y on systems running Z"
-  ],
+  "hunting_hypotheses": ["An attacker is using X technique to achieve Y on systems running Z"],
   "affected_log_sources": [
     {{"source": "Windows Security Event Log", "relevance": "why this log source matters for this hunt"}}
   ],
@@ -370,12 +391,8 @@ Produce a structured threat hunting report as a valid JSON object with this exac
   "detection_opportunities": [
     {{"technique": "T1234", "description": "what behaviour to look for", "log_source": "where to look"}}
   ],
-  "false_positive_considerations": [
-    "description of a potential false positive and how to rule it out"
-  ],
-  "recommended_mitigations": [
-    "specific, actionable mitigation step"
-  ]
+  "false_positive_considerations": ["description of a potential false positive and how to rule it out"],
+  "recommended_mitigations": ["specific, actionable mitigation step"]
 }}
 
 IMPORTANT:
@@ -384,45 +401,24 @@ IMPORTANT:
 - Queries should be realistic and usable — prefer Generic/Sigma if SIEM is unknown
 - Return ONLY the JSON object, no markdown fences or extra text"""
 
-    print("[*] Sending to Claude for threat hunt report...")
+    system = (
+        "You are a senior threat hunter with expertise in SIEM queries, EDR analysis, "
+        "and adversary tradecraft. You produce precise, actionable threat hunting playbooks "
+        "from threat intelligence reports. Return only valid JSON."
+    )
 
-    with client.messages.stream(
-        model="claude-opus-4-6",
-        max_tokens=8096,
-        thinking={"type": "adaptive"},
-        system=(
-            "You are a senior threat hunter with expertise in SIEM queries, EDR analysis, "
-            "and adversary tradecraft. You produce precise, actionable threat hunting playbooks "
-            "from threat intelligence reports. Return only valid JSON."
-        ),
-        messages=[{"role": "user", "content": user_message}],
-    ) as stream:
-        raw = ""
-        print("[*] Building hunt report", end="", flush=True)
-        for text in stream.text_stream:
-            raw += text
-            print(".", end="", flush=True)
-        print(" done")
-
-    try:
-        clean = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
-        clean = re.sub(r"\s*```$", "", clean.strip(), flags=re.MULTILINE)
-        return json.loads(clean)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if match:
-            return json.loads(match.group(0))
-        return {"raw_response": raw}
+    print("[*] Sending to AI for threat hunt report...")
+    raw = _run_ai(system, user_message, provider, api_key, "Building hunt report")
+    return _parse_json(raw)
 
 
 # ---------------------------------------------------------------------------
 # Executive report
 # ---------------------------------------------------------------------------
 
-def analyze_executive_with_claude(scraped: dict, context: str) -> dict:
-    """Generate a non-technical executive summary report."""
-    client = anthropic.Anthropic()
-
+def analyze_executive_with_claude(scraped: dict, context: str,
+                                   provider: str = "anthropic", api_key: str = "") -> dict:
+    """Generate a non-technical executive summary report using the selected AI provider."""
     context_str = f"\nContext: {context}\n" if context else ""
 
     user_message = f"""You are analyzing a cybersecurity threat intelligence article to produce a concise executive briefing.
@@ -448,15 +444,11 @@ Produce a clear, non-technical executive report as a valid JSON object with this
   "affected_regions": ["list of affected countries or regions"],
   "business_impact": "plain English description of potential business impact if targeted",
   "timeline": "brief summary of when activity was first/last observed",
-  "what_happened": [
-    "bullet point describing a key event in plain English"
-  ],
+  "what_happened": ["bullet point describing a key event in plain English"],
   "recommended_actions": [
     {{"priority": "immediate|short-term|long-term", "action": "plain English recommended action for leadership"}}
   ],
-  "key_takeaways": [
-    "single sentence takeaway for an executive audience"
-  ],
+  "key_takeaways": ["single sentence takeaway for an executive audience"],
   "questions_to_ask_your_security_team": [
     "a question a business leader should ask their security team based on this threat"
   ]
@@ -467,35 +459,16 @@ IMPORTANT:
 - Keep recommended actions business-focused (budget, policy, awareness, vendor review)
 - Return ONLY the JSON object, no markdown fences or extra text"""
 
-    print("[*] Sending to Claude for executive report...")
+    system = (
+        "You are a cybersecurity communications specialist who translates complex threat "
+        "intelligence into clear, concise executive briefings for C-suite and board audiences. "
+        "You avoid jargon, focus on business risk and impact, and always recommend practical actions. "
+        "Return only valid JSON."
+    )
 
-    with client.messages.stream(
-        model="claude-opus-4-6",
-        max_tokens=4096,
-        thinking={"type": "adaptive"},
-        system=(
-            "You are a cybersecurity communications specialist who translates complex threat "
-            "intelligence into clear, concise executive briefings for C-suite and board audiences. "
-            "You avoid jargon, focus on business risk and impact, and always recommend practical actions. "
-            "Return only valid JSON."
-        ),
-        messages=[{"role": "user", "content": user_message}],
-    ) as stream:
-        raw = ""
-        print("[*] Building executive report", end="", flush=True)
-        for text in stream.text_stream:
-            raw += text
-            print(".", end="", flush=True)
-        print(" done")
-
-    try:
-        clean = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
-        clean = re.sub(r"\s*```$", "", clean.strip(), flags=re.MULTILINE)
-        return json.loads(clean)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if match:
-            return json.loads(match.group(0))
+    print("[*] Sending to AI for executive report...")
+    raw = _run_ai(system, user_message, provider, api_key, "Building executive report")
+    return _parse_json(raw)
         return {"raw_response": raw}
 
 

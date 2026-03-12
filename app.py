@@ -229,6 +229,42 @@ with st.sidebar:
     )
 
     st.divider()
+    st.subheader("AI Provider")
+
+    ai_provider = st.radio(
+        "Provider",
+        ["Anthropic (Claude)", "OpenAI (GPT-4o)"],
+        horizontal=True,
+        help="Choose which AI provider to use for analysis",
+    )
+
+    provider_key = "anthropic" if ai_provider.startswith("Anthropic") else "openai"
+    key_placeholder = "sk-ant-..." if provider_key == "anthropic" else "sk-..."
+    key_help = (
+        "Your Anthropic API key from console.anthropic.com"
+        if provider_key == "anthropic"
+        else "Your OpenAI API key from platform.openai.com"
+    )
+
+    user_api_key = st.text_input(
+        "API Key",
+        type="password",
+        placeholder=key_placeholder,
+        help=key_help + ". Stored in your session only — never saved to disk.",
+    )
+
+    if not user_api_key:
+        env_key = (
+            os.environ.get("ANTHROPIC_API_KEY", "")
+            if provider_key == "anthropic"
+            else os.environ.get("OPENAI_API_KEY", "")
+        )
+        if env_key:
+            st.caption("Using server API key.")
+        else:
+            st.warning("Enter an API key to run analysis.")
+
+    st.divider()
     st.subheader("Output Options")
 
     dl_json = st.checkbox("JSON", value=True)
@@ -652,11 +688,14 @@ if run_button:
             st.write(f"Sending to Claude for {report_labels[report_type]}...")
             try:
                 if report_type == "Technical IOC Report":
-                    result = analyze_iocs_with_claude(scraped, pre, context_input.strip())
+                    result = analyze_iocs_with_claude(scraped, pre, context_input.strip(),
+                                                      provider=provider_key, api_key=user_api_key)
                 elif report_type == "Threat Hunt Report":
-                    result = analyze_threat_hunt_with_claude(scraped, pre, context_input.strip())
+                    result = analyze_threat_hunt_with_claude(scraped, pre, context_input.strip(),
+                                                             provider=provider_key, api_key=user_api_key)
                 else:
-                    result = analyze_executive_with_claude(scraped, context_input.strip())
+                    result = analyze_executive_with_claude(scraped, context_input.strip(),
+                                                          provider=provider_key, api_key=user_api_key)
             except Exception as e:
                 st.error(f"Claude analysis failed: {e}")
                 st.stop()
