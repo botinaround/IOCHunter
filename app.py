@@ -11,7 +11,7 @@ import os
 import hashlib
 import yaml
 import streamlit as st
-import streamlit_authenticator as stauth
+from oauth_google import build_auth_url, generate_state, exchange_code, get_userinfo
 
 from scraper_bot import (
     scrape_page,
@@ -36,7 +36,7 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------
-# Auth — Google OAuth2 via streamlit-authenticator
+# Google OAuth2 config
 # ---------------------------------------------------------------------------
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
@@ -44,16 +44,39 @@ CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
 with open(CONFIG_PATH) as f:
     config = yaml.safe_load(f)
 
-authenticator = stauth.Authenticate(
-    config["credentials"],
-    config["cookie"]["name"],
-    config["cookie"]["key"],
-    config["cookie"]["expiry_days"],
-)
+_GOOGLE_CLIENT_ID     = config["oauth2"]["google"]["client_id"]
+_GOOGLE_CLIENT_SECRET = config["oauth2"]["google"]["client_secret"]
+_GOOGLE_REDIRECT_URI  = config["oauth2"]["google"]["redirect_uri"]
 
-# Save config after every run so new OAuth2 users are persisted
-with open(CONFIG_PATH, "w") as f:
-    yaml.dump(config, f, default_flow_style=False)
+# ---------------------------------------------------------------------------
+# Handle Google OAuth callback (runs on every page load)
+# ---------------------------------------------------------------------------
+
+_qp = st.query_params
+if "code" in _qp and not st.session_state.get("authentication_status"):
+    _code  = _qp["code"]
+    _state = _qp.get("state", "")
+    # Verify state matches what we stored to prevent CSRF
+    if _state == st.session_state.get("oauth_state", ""):
+        try:
+            tokens   = exchange_code(_code, _GOOGLE_CLIENT_ID, _GOOGLE_CLIENT_SECRET, _GOOGLE_REDIRECT_URI)
+            userinfo = get_userinfo(tokens["access_token"])
+            _email   = userinfo.get("email", "")
+            _name    = userinfo.get("name") or _email.split("@")[0]
+            st.session_state["authentication_status"] = True
+            st.session_state["name"]        = _name
+            st.session_state["username"]    = _email
+            st.session_state["access_tier"] = "google"
+            st.query_params.clear()
+            st.rerun()
+        except Exception as _e:
+            st.query_params.clear()
+            st.session_state["oauth_error"] = str(_e)
+            st.rerun()
+    else:
+        # State mismatch — clear and reload cleanly
+        st.query_params.clear()
+        st.rerun()
 
 # ---------------------------------------------------------------------------
 # Access key helpers (for key-tier login)
@@ -147,37 +170,43 @@ if not st.session_state.get("authentication_status") and not st.session_state.ge
 
         st.markdown('<hr class="login-divider"/>', unsafe_allow_html=True)
 
-        # --- Google OAuth login (user must supply own API key) ---
-        st.markdown('<p class="tier-label">🌐 Google Login — Bring Your Own API Key</p>', unsafe_allow_html=True)
-        try:
-            authenticator.experimental_guest_login(
-                "Sign in with Google",
-                provider="google",
-                oauth2=config["oauth2"],
-                use_container_width=True,
+        # --- BYO API Key login (Google OAuth or email fallback) ---
+        st.markdown('<p class="tier-label">🌐 Bring Your Own API Key</p>', unsafe_allow_html=True)
+
+        # Show any OAuth error from a previous attempt
+        if st.session_state.get("oauth_error"):
+            st.error(f"Google sign-in failed: {st.session_state.pop('oauth_error')}")
+
+        # Google OAuth button
+        _state = generate_state()
+        st.session_state["oauth_state"] = _state
+        _auth_url = build_auth_url(_GOOGLE_CLIENT_ID, _GOOGLE_REDIRECT_URI, _state)
+        st.link_button("Sign in with Google", _auth_url, use_container_width=True, type="primary")
+
+        st.markdown('<p style="text-align:center;color:#555;font-size:11px;margin:10px 0;">— or continue with email —</p>', unsafe_allow_html=True)
+
+        with st.form("byok_login_form"):
+            byok_email = st.text_input(
+                "Email",
+                placeholder="you@example.com",
+                label_visibility="collapsed",
             )
-            # Google OAuth sets authentication_status — mark tier
-            if st.session_state.get("authentication_status") and not st.session_state.get("access_tier"):
-                st.session_state["access_tier"] = "google"
-        except Exception as e:
-            # Clear bad session state
-            for _k in ["authentication_status", "name", "username", "access_tier"]:
-                st.session_state.pop(_k, None)
-            err = str(e).lower()
-            if "not authorized" in err or "state" in err or "oauth" in err:
-                # Stale OAuth callback params in the URL — clear them and reload
-                # so the login page renders cleanly with the button visible.
-                try:
-                    st.query_params.clear()
-                except Exception:
-                    pass
-                st.rerun()
+            byok_submit = st.form_submit_button("Continue with Email", use_container_width=True)
+
+        if byok_submit:
+            email = byok_email.strip().lower()
+            if not email or "@" not in email:
+                st.error("Enter a valid email address.")
             else:
-                st.error(f"Google login error: {e}")
+                st.session_state["authentication_status"] = True
+                st.session_state["name"] = email.split("@")[0]
+                st.session_state["username"] = email
+                st.session_state["access_tier"] = "google"
+                st.rerun()
 
         st.markdown("""
-        <p style="text-align:center; color:#555; font-size:11px; margin-top:20px;">
-            Don't have an access key? Sign in with Google and use your own API key.<br/>
+        <p style="text-align:center; color:#555; font-size:11px; margin-top:16px;">
+            Don't have an access key? Sign in above and use your own API key.<br/>
             Contact your administrator to request an access key.
         </p>
         """, unsafe_allow_html=True)
@@ -187,7 +216,7 @@ if not st.session_state.get("authentication_status") and not st.session_state.ge
 
     st.stop()
 
-# Set access tier for Google OAuth users who logged in without a key
+# Fallback: ensure access_tier is always set for authenticated users
 if st.session_state.get("authentication_status") and not st.session_state.get("access_tier"):
     st.session_state["access_tier"] = "google"
 
@@ -300,17 +329,14 @@ with st.sidebar:
     run_button = st.button("Run IOC Hunter", type="primary", use_container_width=True)
 
     st.divider()
-    tier_label = "🔑 Key Access" if is_key_tier else "🌐 Google"
+    tier_label = "🔑 Key Access" if is_key_tier else "🔑 BYO Key"
     st.caption(f"Signed in as **{st.session_state.get('name', '')}** ({tier_label})")
 
-    if is_key_tier:
-        if st.button("Logout", use_container_width=True):
-            for k in ["key_authenticated", "authentication_status", "access_tier",
-                      "name", "username", "result", "result_url", "result_report_type"]:
-                st.session_state.pop(k, None)
-            st.rerun()
-    else:
-        authenticator.logout(button_name="Logout", location="sidebar", use_container_width=True)
+    if st.button("Logout", use_container_width=True):
+        for k in ["key_authenticated", "authentication_status", "access_tier",
+                  "name", "username", "result", "result_url", "result_report_type"]:
+            st.session_state.pop(k, None)
+        st.rerun()
 
 # ---------------------------------------------------------------------------
 # Helper — render IOC tables
