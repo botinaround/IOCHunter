@@ -2,3 +2,5 @@ anthropic
 playwright
 asyncio
 streamlit
+streamlit-authenticator
+pyyaml

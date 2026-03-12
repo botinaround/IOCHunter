@@ -10,7 +10,7 @@ from cache import get_all_entries, get_stats, delete_entry, clear_expired, clear
 st.set_page_config(page_title="Cache Viewer — IOC Hunter", page_icon="🗄️", layout="wide")
 
 # Auth gate — reuse same session state as main app
-if not st.session_state.get("authenticated"):
+if not st.session_state.get("authentication_status"):
     st.warning("Please log in from the main page first.")
     st.stop()
 

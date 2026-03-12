@@ -8,8 +8,9 @@ import threading
 import json
 import datetime
 import os
-import hashlib
+import yaml
 import streamlit as st
+import streamlit_authenticator as stauth
 
 from scraper_bot import (
     scrape_page,
@@ -23,54 +24,7 @@ from scraper_bot import (
 from cache import get_cached, save_cache
 
 # ---------------------------------------------------------------------------
-# Auth — API key gate
-# ---------------------------------------------------------------------------
-
-def _load_valid_keys() -> set:
-    """
-    Load valid API keys from the IOC_HUNTER_API_KEYS environment variable.
-    Set it to a comma-separated list of keys, e.g.:
-      export IOC_HUNTER_API_KEYS="key-abc123,key-xyz789"
-    """
-    raw = os.environ.get("IOC_HUNTER_API_KEYS", "")
-    return {k.strip() for k in raw.split(",") if k.strip()}
-
-
-def _check_key(key: str) -> bool:
-    valid = _load_valid_keys()
-    if not valid:
-        # No keys configured — block all access
-        return False
-    # Constant-time comparison via hash to avoid timing attacks
-    key_hash = hashlib.sha256(key.encode()).hexdigest()
-    return any(
-        hashlib.sha256(v.encode()).hexdigest() == key_hash for v in valid
-    )
-
-
-def require_auth():
-    """Renders the login gate. Returns only when the session is authenticated."""
-    if st.session_state.get("authenticated"):
-        return
-
-    st.title("🔒 IOC Hunter")
-    st.caption("Enter your API key to continue.")
-
-    with st.form("auth_form"):
-        key_input = st.text_input("API Key", type="password", placeholder="key-...")
-        submitted = st.form_submit_button("Unlock", use_container_width=True)
-
-    if submitted:
-        if _check_key(key_input):
-            st.session_state["authenticated"] = True
-            st.rerun()
-        else:
-            st.error("Invalid API key.")
-
-    st.stop()
-
-# ---------------------------------------------------------------------------
-# Page config — must be the very first st call, before auth gate
+# Page config — must be first st call
 # ---------------------------------------------------------------------------
 
 st.set_page_config(
@@ -80,7 +34,42 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-require_auth()
+# ---------------------------------------------------------------------------
+# Auth — Google OAuth2 via streamlit-authenticator
+# ---------------------------------------------------------------------------
+
+CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
+
+with open(CONFIG_PATH) as f:
+    config = yaml.safe_load(f)
+
+authenticator = stauth.Authenticate(
+    config["credentials"],
+    config["cookie"]["name"],
+    config["cookie"]["key"],
+    config["cookie"]["expiry_days"],
+)
+
+# Show Google login button
+try:
+    authenticator.experimental_guest_login(
+        "Login with Google",
+        provider="google",
+        oauth2=config["oauth2"],
+        use_container_width=True,
+    )
+except Exception as e:
+    st.error(f"Login error: {e}")
+
+# Save config after every run so new OAuth2 users are persisted
+with open(CONFIG_PATH, "w") as f:
+    yaml.dump(config, f, default_flow_style=False)
+
+# Gate the rest of the app
+if not st.session_state.get("authentication_status"):
+    st.title("🔍 IOC Hunter")
+    st.info("Click **Login with Google** above to continue.")
+    st.stop()
 
 # ---------------------------------------------------------------------------
 # Sidebar — inputs
@@ -156,9 +145,8 @@ with st.sidebar:
     run_button = st.button("Run IOC Hunter", type="primary", use_container_width=True)
 
     st.divider()
-    if st.button("Logout", use_container_width=True):
-        st.session_state["authenticated"] = False
-        st.rerun()
+    st.caption(f"Signed in as **{st.session_state.get('name', '')}**")
+    authenticator.logout(button_name="Logout", location="sidebar", use_container_width=True)
 
 # ---------------------------------------------------------------------------
 # Helper — render IOC tables

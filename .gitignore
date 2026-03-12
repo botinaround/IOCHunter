@@ -1,6 +1,8 @@
 # Secrets — never commit these
 .env
 *.env
+config.yaml
+ioc_hunter_cache.db
 
 # Test output files
 *.json
