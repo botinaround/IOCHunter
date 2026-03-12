@@ -50,25 +50,120 @@ authenticator = stauth.Authenticate(
     config["cookie"]["expiry_days"],
 )
 
-# Show Google login button
-try:
-    authenticator.experimental_guest_login(
-        "Login with Google",
-        provider="google",
-        oauth2=config["oauth2"],
-        use_container_width=True,
-    )
-except Exception as e:
-    st.error(f"Login error: {e}")
-
 # Save config after every run so new OAuth2 users are persisted
 with open(CONFIG_PATH, "w") as f:
     yaml.dump(config, f, default_flow_style=False)
 
 # Gate the rest of the app
 if not st.session_state.get("authentication_status"):
-    st.title("🔍 IOC Hunter")
-    st.info("Click **Login with Google** above to continue.")
+    st.markdown("""
+    <style>
+        [data-testid="stSidebar"] {display: none;}
+        .login-container {
+            max-width: 480px;
+            margin: 60px auto 0 auto;
+            padding: 48px 40px;
+            background: #0e1117;
+            border: 1px solid #2d2d2d;
+            border-radius: 12px;
+        }
+        .login-logo {
+            font-size: 52px;
+            text-align: center;
+            margin-bottom: 8px;
+        }
+        .login-title {
+            font-size: 32px;
+            font-weight: 700;
+            text-align: center;
+            color: #ffffff;
+            margin: 0;
+            letter-spacing: -0.5px;
+        }
+        .login-subtitle {
+            text-align: center;
+            color: #8b8b8b;
+            font-size: 15px;
+            margin-top: 6px;
+            margin-bottom: 32px;
+        }
+        .login-divider {
+            border: none;
+            border-top: 1px solid #2d2d2d;
+            margin: 28px 0;
+        }
+        .login-features {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            margin-bottom: 32px;
+        }
+        .login-feature {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            color: #c0c0c0;
+            font-size: 14px;
+        }
+        .login-feature-icon {
+            font-size: 18px;
+            width: 28px;
+            text-align: center;
+        }
+        .login-footer {
+            text-align: center;
+            color: #555;
+            font-size: 12px;
+            margin-top: 28px;
+        }
+    </style>
+
+    <div class="login-container">
+        <div class="login-logo">🔍</div>
+        <h1 class="login-title">IOC Hunter</h1>
+        <p class="login-subtitle">AI-Powered Threat Intelligence Platform</p>
+        <hr class="login-divider"/>
+        <div class="login-features">
+            <div class="login-feature">
+                <span class="login-feature-icon">🎯</span>
+                <span>Extract IOCs from any threat intelligence source</span>
+            </div>
+            <div class="login-feature">
+                <span class="login-feature-icon">🧠</span>
+                <span>Claude AI-powered deep analysis with confidence scoring</span>
+            </div>
+            <div class="login-feature">
+                <span class="login-feature-icon">🕵️</span>
+                <span>Threat hunt playbooks with detection queries</span>
+            </div>
+            <div class="login-feature">
+                <span class="login-feature-icon">📊</span>
+                <span>Executive reports for leadership briefings</span>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Center the login button
+    _, center_col, _ = st.columns([1, 2, 1])
+    with center_col:
+        try:
+            authenticator.experimental_guest_login(
+                "Sign in with Google",
+                provider="google",
+                oauth2=config["oauth2"],
+                use_container_width=True,
+            )
+        except Exception as e:
+            st.error(f"Login error: {e}")
+
+    st.markdown("""
+    <p style="text-align:center; color:#555; font-size:12px; margin-top:24px;">
+        Access is restricted to authorized users only.<br/>
+        Contact your administrator if you need access.
+    </p>
+    """, unsafe_allow_html=True)
+
     st.stop()
 
 # ---------------------------------------------------------------------------
