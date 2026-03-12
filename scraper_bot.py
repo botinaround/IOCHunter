@@ -469,7 +469,6 @@ IMPORTANT:
     print("[*] Sending to AI for executive report...")
     raw = _run_ai(system, user_message, provider, api_key, "Building executive report")
     return _parse_json(raw)
-        return {"raw_response": raw}
 
 
 # ---------------------------------------------------------------------------
