@@ -160,12 +160,19 @@ if not st.session_state.get("authentication_status") and not st.session_state.ge
             if st.session_state.get("authentication_status") and not st.session_state.get("access_tier"):
                 st.session_state["access_tier"] = "google"
         except Exception as e:
-            # Stale OAuth callback or expired state — clear bad session data and
-            # let the page render cleanly so the user can try again.
+            # Clear bad session state
             for _k in ["authentication_status", "name", "username", "access_tier"]:
                 st.session_state.pop(_k, None)
             err = str(e).lower()
-            if "not authorized" not in err and "state" not in err:
+            if "not authorized" in err or "state" in err or "oauth" in err:
+                # Stale OAuth callback params in the URL — clear them and reload
+                # so the login page renders cleanly with the button visible.
+                try:
+                    st.query_params.clear()
+                except Exception:
+                    pass
+                st.rerun()
+            else:
                 st.error(f"Google login error: {e}")
 
         st.markdown("""
