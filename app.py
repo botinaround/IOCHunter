@@ -433,7 +433,35 @@ def render_executive(data: dict):
 # ---------------------------------------------------------------------------
 
 st.title("IOC Hunter")
-st.caption("Scrape a threat intelligence URL or paste article text directly, then click **Run IOC Hunter**.")
+st.caption("AI-Powered Threat Intelligence Analysis")
+
+with st.expander("How to Use", expanded=False):
+    st.markdown("""
+### Getting Started
+
+**1. Choose your input mode** (sidebar)
+- **Scrape URL** — paste a link to a threat intel blog post, security advisory, or report and the tool will fetch and analyse it automatically.
+- **Paste Text** — if a page is behind a paywall or bot protection (e.g. Cloudflare), copy the article text from your browser and paste it directly. Optionally add the source URL for attribution.
+
+---
+
+### Report Types
+
+| Report | Best For |
+|---|---|
+| **Technical IOC Report** | SOC analysts and incident responders who need raw indicators — IPs, hashes, domains, CVEs, MITRE techniques |
+| **Threat Hunt Report** | Threat hunters who need hypotheses, step-by-step hunting playbooks, detection queries, and log sources |
+| **Executive Report** | Leadership and non-technical stakeholders — plain English summary, business impact, risk level, and recommended actions |
+
+---
+
+### Tips
+
+- **Threat Hunt Context** — add extra context in the sidebar (e.g. *"APT29 targeting energy sector"*) to focus Claude's analysis on what matters to your environment.
+- **Bot-protected sites** — if scraping fails with a Cloudflare or login error, switch to **Paste Text** mode and copy the article manually.
+- **Downloads** — after analysis completes, use the download buttons to export results as JSON, CSV (Technical report only), or Markdown.
+- **Confidence levels** — IOCs are rated 🟢 High / 🟡 Medium / 🔴 Low based on how explicitly the source attributes each indicator.
+""")
 
 if run_button:
     if mode == "Scrape URL" and not url_input.strip():
