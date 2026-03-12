@@ -309,6 +309,197 @@ IMPORTANT:
 
 
 # ---------------------------------------------------------------------------
+# Threat Hunt report
+# ---------------------------------------------------------------------------
+
+def analyze_threat_hunt_with_claude(scraped: dict, pre_extracted: dict, context: str) -> dict:
+    """Generate a structured threat hunt report with hypotheses, steps, and detection guidance."""
+    client = anthropic.Anthropic()
+
+    pre_extracted_str = ""
+    if pre_extracted:
+        pre_extracted_str = "\n\nREGEX PRE-EXTRACTED CANDIDATES:\n"
+        for ioc_type, values in pre_extracted.items():
+            pre_extracted_str += f"  {ioc_type.upper()}: {', '.join(values[:30])}\n"
+
+    context_str = f"\nThreat Hunt Context: {context}\n" if context else ""
+
+    user_message = f"""You are analyzing a threat intelligence source to produce a threat hunting report.
+{context_str}
+SOURCE URL: {scraped['url']}
+PAGE TITLE: {scraped['title']}
+{pre_extracted_str}
+
+FULL PAGE CONTENT:
+{scraped['text']}
+
+---
+
+Produce a structured threat hunting report as a valid JSON object with this exact structure:
+
+{{
+  "summary": "2-3 sentence summary of the threat",
+  "threat_actor": "threat actor name or null",
+  "malware_families": ["list of malware names"],
+  "priority": "critical|high|medium|low",
+  "hunting_hypotheses": [
+    "An attacker is using X technique to achieve Y on systems running Z"
+  ],
+  "affected_log_sources": [
+    {{"source": "Windows Security Event Log", "relevance": "why this log source matters for this hunt"}}
+  ],
+  "hunting_steps": [
+    {{
+      "step": 1,
+      "title": "short step title",
+      "description": "what to do and why",
+      "log_sources": ["list of relevant log sources"],
+      "queries": [
+        {{"platform": "Splunk|KQL|Sigma|Generic", "query": "the query string", "notes": "what to look for"}}
+      ]
+    }}
+  ],
+  "iocs_to_hunt": {{
+    "ips": ["list of IPs"],
+    "domains": ["list of domains"],
+    "hashes": ["list of hashes"],
+    "filenames": ["list of filenames"],
+    "registry_keys": ["list of registry keys"],
+    "other": ["any other indicators"]
+  }},
+  "detection_opportunities": [
+    {{"technique": "T1234", "description": "what behaviour to look for", "log_source": "where to look"}}
+  ],
+  "false_positive_considerations": [
+    "description of a potential false positive and how to rule it out"
+  ],
+  "recommended_mitigations": [
+    "specific, actionable mitigation step"
+  ]
+}}
+
+IMPORTANT:
+- Refang any defanged IOCs
+- Hunting steps should be ordered from initial triage to deep investigation
+- Queries should be realistic and usable — prefer Generic/Sigma if SIEM is unknown
+- Return ONLY the JSON object, no markdown fences or extra text"""
+
+    print("[*] Sending to Claude for threat hunt report...")
+
+    with client.messages.stream(
+        model="claude-opus-4-6",
+        max_tokens=8096,
+        thinking={"type": "adaptive"},
+        system=(
+            "You are a senior threat hunter with expertise in SIEM queries, EDR analysis, "
+            "and adversary tradecraft. You produce precise, actionable threat hunting playbooks "
+            "from threat intelligence reports. Return only valid JSON."
+        ),
+        messages=[{"role": "user", "content": user_message}],
+    ) as stream:
+        raw = ""
+        print("[*] Building hunt report", end="", flush=True)
+        for text in stream.text_stream:
+            raw += text
+            print(".", end="", flush=True)
+        print(" done")
+
+    try:
+        clean = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
+        clean = re.sub(r"\s*```$", "", clean.strip(), flags=re.MULTILINE)
+        return json.loads(clean)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if match:
+            return json.loads(match.group(0))
+        return {"raw_response": raw}
+
+
+# ---------------------------------------------------------------------------
+# Executive report
+# ---------------------------------------------------------------------------
+
+def analyze_executive_with_claude(scraped: dict, context: str) -> dict:
+    """Generate a non-technical executive summary report."""
+    client = anthropic.Anthropic()
+
+    context_str = f"\nContext: {context}\n" if context else ""
+
+    user_message = f"""You are analyzing a cybersecurity threat intelligence article to produce a concise executive briefing.
+{context_str}
+SOURCE URL: {scraped['url']}
+PAGE TITLE: {scraped['title']}
+
+FULL PAGE CONTENT:
+{scraped['text']}
+
+---
+
+Produce a clear, non-technical executive report as a valid JSON object with this exact structure:
+
+{{
+  "headline": "one sentence headline summarising the threat in plain English",
+  "summary": "3-4 sentence plain English summary suitable for a non-technical executive",
+  "threat_actor": "name of the threat actor or group, or null",
+  "attack_type": "plain English description of the type of attack (e.g. ransomware, phishing campaign)",
+  "risk_level": "critical|high|medium|low",
+  "risk_justification": "1-2 sentences explaining why this risk level was assigned",
+  "affected_sectors": ["list of affected industries"],
+  "affected_regions": ["list of affected countries or regions"],
+  "business_impact": "plain English description of potential business impact if targeted",
+  "timeline": "brief summary of when activity was first/last observed",
+  "what_happened": [
+    "bullet point describing a key event in plain English"
+  ],
+  "recommended_actions": [
+    {{"priority": "immediate|short-term|long-term", "action": "plain English recommended action for leadership"}}
+  ],
+  "key_takeaways": [
+    "single sentence takeaway for an executive audience"
+  ],
+  "questions_to_ask_your_security_team": [
+    "a question a business leader should ask their security team based on this threat"
+  ]
+}}
+
+IMPORTANT:
+- Avoid technical jargon — write for a C-suite audience with no security background
+- Keep recommended actions business-focused (budget, policy, awareness, vendor review)
+- Return ONLY the JSON object, no markdown fences or extra text"""
+
+    print("[*] Sending to Claude for executive report...")
+
+    with client.messages.stream(
+        model="claude-opus-4-6",
+        max_tokens=4096,
+        thinking={"type": "adaptive"},
+        system=(
+            "You are a cybersecurity communications specialist who translates complex threat "
+            "intelligence into clear, concise executive briefings for C-suite and board audiences. "
+            "You avoid jargon, focus on business risk and impact, and always recommend practical actions. "
+            "Return only valid JSON."
+        ),
+        messages=[{"role": "user", "content": user_message}],
+    ) as stream:
+        raw = ""
+        print("[*] Building executive report", end="", flush=True)
+        for text in stream.text_stream:
+            raw += text
+            print(".", end="", flush=True)
+        print(" done")
+
+    try:
+        clean = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
+        clean = re.sub(r"\s*```$", "", clean.strip(), flags=re.MULTILINE)
+        return json.loads(clean)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if match:
+            return json.loads(match.group(0))
+        return {"raw_response": raw}
+
+
+# ---------------------------------------------------------------------------
 # Output formatters
 # ---------------------------------------------------------------------------
 

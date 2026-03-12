@@ -15,6 +15,8 @@ from scraper_bot import (
     scrape_page,
     pre_extract_iocs,
     analyze_iocs_with_claude,
+    analyze_threat_hunt_with_claude,
+    analyze_executive_with_claude,
     to_csv,
     to_markdown,
 )
@@ -116,6 +118,18 @@ with st.sidebar:
             help="Used for attribution in the report — does not fetch the URL",
         )
         url_input = ""
+
+    report_type = st.radio(
+        "Report Type",
+        ["Technical IOC Report", "Threat Hunt Report", "Executive Report"],
+        help=(
+            "**Technical IOC Report** — Full IOC extraction with hashes, IPs, domains, MITRE techniques\n\n"
+            "**Threat Hunt Report** — Hunting hypotheses, step-by-step playbook, detection queries\n\n"
+            "**Executive Report** — Plain-English briefing for leadership with business impact and recommended actions"
+        ),
+    )
+
+    st.divider()
 
     context_input = st.text_area(
         "Threat Hunt Context (optional)",
@@ -256,6 +270,164 @@ def render_results(data: dict, source_url: str):
         st.json(data)
 
 
+def render_threat_hunt(data: dict):
+    PRIORITY_COLORS = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
+    priority = data.get("priority", "unknown")
+    icon = PRIORITY_COLORS.get(priority, "⚪")
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Priority", f"{icon} {priority.capitalize()}")
+    col2.metric("Hunting Steps", len(data.get("hunting_steps", [])))
+    col3.metric("Detection Opportunities", len(data.get("detection_opportunities", [])))
+
+    st.divider()
+
+    tab_overview, tab_steps, tab_iocs, tab_detections, tab_mitigations, tab_raw = st.tabs(
+        ["Overview", "Hunt Steps", "IOCs to Hunt", "Detections", "Mitigations", "Raw JSON"]
+    )
+
+    with tab_overview:
+        if data.get("summary"):
+            st.info(data["summary"])
+
+        cols = st.columns(2)
+        with cols[0]:
+            if data.get("threat_actor"):
+                st.markdown(f"**Threat Actor:** {data['threat_actor']}")
+            if data.get("malware_families"):
+                st.markdown(f"**Malware Families:** {', '.join(data['malware_families'])}")
+        with cols[1]:
+            if data.get("affected_log_sources"):
+                st.markdown("**Relevant Log Sources:**")
+                for src in data["affected_log_sources"]:
+                    st.markdown(f"- **{src.get('source','')}** — {src.get('relevance','')}")
+
+        if data.get("hunting_hypotheses"):
+            st.markdown("**Hunting Hypotheses:**")
+            for h in data["hunting_hypotheses"]:
+                st.markdown(f"> {h}")
+
+        if data.get("false_positive_considerations"):
+            st.markdown("**False Positive Considerations:**")
+            for fp in data["false_positive_considerations"]:
+                st.markdown(f"- {fp}")
+
+    with tab_steps:
+        for step in data.get("hunting_steps", []):
+            with st.expander(f"Step {step.get('step','')} — {step.get('title','')}", expanded=True):
+                st.markdown(step.get("description", ""))
+                if step.get("log_sources"):
+                    st.caption(f"Log sources: {', '.join(step['log_sources'])}")
+                for q in step.get("queries", []):
+                    st.markdown(f"**{q.get('platform','')}**")
+                    st.code(q.get("query", ""), language="splunk" if "Splunk" in q.get("platform","") else "text")
+                    if q.get("notes"):
+                        st.caption(q["notes"])
+
+    with tab_iocs:
+        iocs = data.get("iocs_to_hunt", {})
+        for key, label in [("ips","IP Addresses"), ("domains","Domains"), ("hashes","Hashes"),
+                           ("filenames","Filenames"), ("registry_keys","Registry Keys"), ("other","Other")]:
+            entries = iocs.get(key, [])
+            if entries:
+                st.markdown(f"**{label}**")
+                for e in entries:
+                    st.code(e, language="text")
+
+    with tab_detections:
+        detections = data.get("detection_opportunities", [])
+        if detections:
+            rows = [{"Technique": d.get("technique",""), "Behaviour": d.get("description",""),
+                     "Log Source": d.get("log_source","")} for d in detections]
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+        else:
+            st.info("No detection opportunities identified.")
+
+    with tab_mitigations:
+        mitigations = data.get("recommended_mitigations", [])
+        if mitigations:
+            for i, m in enumerate(mitigations, 1):
+                st.markdown(f"{i}. {m}")
+        else:
+            st.info("No mitigations identified.")
+
+    with tab_raw:
+        st.json(data)
+
+
+def render_executive(data: dict):
+    RISK_COLORS = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
+    risk = data.get("risk_level", "unknown")
+    icon = RISK_COLORS.get(risk, "⚪")
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Risk Level", f"{icon} {risk.capitalize()}")
+    col2.metric("Attack Type", data.get("attack_type", "N/A"))
+    col3.metric("Threat Actor", data.get("threat_actor") or "Unknown")
+
+    st.divider()
+
+    tab_brief, tab_actions, tab_questions, tab_raw = st.tabs(
+        ["Briefing", "Recommended Actions", "Questions for Your Team", "Raw JSON"]
+    )
+
+    with tab_brief:
+        if data.get("headline"):
+            st.subheader(data["headline"])
+
+        if data.get("summary"):
+            st.info(data["summary"])
+
+        if data.get("risk_justification"):
+            st.markdown(f"**Why this risk level:** {data['risk_justification']}")
+
+        cols = st.columns(2)
+        with cols[0]:
+            if data.get("affected_sectors"):
+                st.markdown(f"**Affected Sectors:** {', '.join(data['affected_sectors'])}")
+            if data.get("affected_regions"):
+                st.markdown(f"**Affected Regions:** {', '.join(data['affected_regions'])}")
+            if data.get("timeline"):
+                st.markdown(f"**Timeline:** {data['timeline']}")
+        with cols[1]:
+            if data.get("business_impact"):
+                st.markdown(f"**Business Impact:** {data['business_impact']}")
+
+        if data.get("what_happened"):
+            st.markdown("**What Happened:**")
+            for point in data["what_happened"]:
+                st.markdown(f"- {point}")
+
+        if data.get("key_takeaways"):
+            st.markdown("**Key Takeaways:**")
+            for t in data["key_takeaways"]:
+                st.markdown(f"- {t}")
+
+    with tab_actions:
+        actions = data.get("recommended_actions", [])
+        if actions:
+            for priority in ["immediate", "short-term", "long-term"]:
+                group = [a for a in actions if a.get("priority") == priority]
+                if group:
+                    labels = {"immediate": "🔴 Immediate", "short-term": "🟡 Short-Term", "long-term": "🟢 Long-Term"}
+                    st.markdown(f"**{labels[priority]}**")
+                    for a in group:
+                        st.markdown(f"- {a.get('action','')}")
+        else:
+            st.info("No recommended actions identified.")
+
+    with tab_questions:
+        questions = data.get("questions_to_ask_your_security_team", [])
+        if questions:
+            for i, q in enumerate(questions, 1):
+                st.markdown(f"{i}. {q}")
+        else:
+            st.info("No questions generated.")
+
+    with tab_raw:
+        st.json(data)
+
+
 # ---------------------------------------------------------------------------
 # Main — run analysis
 # ---------------------------------------------------------------------------
@@ -318,55 +490,71 @@ if run_button:
                 f"{len(scraped['text']):,} characters"
             )
 
-        st.write("Running regex pre-extraction...")
-        pre = pre_extract_iocs(scraped["text"])
-        total_candidates = sum(len(v) for v in pre.values())
-        st.write(
-            f"Found **{total_candidates}** IOC candidates across "
-            f"**{len(pre)}** types"
-        )
+        # Regex pre-extraction only needed for technical/hunt reports
+        pre = {}
+        if report_type in ("Technical IOC Report", "Threat Hunt Report"):
+            st.write("Running regex pre-extraction...")
+            pre = pre_extract_iocs(scraped["text"])
+            total_candidates = sum(len(v) for v in pre.values())
+            st.write(
+                f"Found **{total_candidates}** IOC candidates across "
+                f"**{len(pre)}** types"
+            )
 
-        st.write("Sending to Claude for deep analysis...")
+        report_labels = {
+            "Technical IOC Report": "technical IOC extraction",
+            "Threat Hunt Report": "threat hunt playbook",
+            "Executive Report": "executive briefing",
+        }
+        st.write(f"Sending to Claude for {report_labels[report_type]}...")
         try:
-            result = analyze_iocs_with_claude(scraped, pre, context_input.strip())
+            if report_type == "Technical IOC Report":
+                result = analyze_iocs_with_claude(scraped, pre, context_input.strip())
+            elif report_type == "Threat Hunt Report":
+                result = analyze_threat_hunt_with_claude(scraped, pre, context_input.strip())
+            else:
+                result = analyze_executive_with_claude(scraped, context_input.strip())
         except Exception as e:
             st.error(f"Claude analysis failed: {e}")
             st.stop()
 
         status.update(label="Analysis complete!", state="complete", expanded=False)
 
-    render_results(result, url)
+    if report_type == "Technical IOC Report":
+        render_results(result, url)
+    elif report_type == "Threat Hunt Report":
+        render_threat_hunt(result)
+    else:
+        render_executive(result)
 
     # --- Download buttons ---
-    if result and (dl_json or dl_csv or dl_md):
+    if result and dl_json:
         st.divider()
         st.subheader("Download Results")
-        base = "iocs"
         dl_cols = st.columns(3)
 
-        if dl_json:
-            dl_cols[0].download_button(
-                label="Download JSON",
-                data=json.dumps(result, indent=2),
-                file_name=f"{base}.json",
-                mime="application/json",
-                use_container_width=True,
-            )
+        dl_cols[0].download_button(
+            label="Download JSON",
+            data=json.dumps(result, indent=2),
+            file_name="report.json",
+            mime="application/json",
+            use_container_width=True,
+        )
 
-        if dl_csv:
-            dl_cols[1].download_button(
-                label="Download CSV",
-                data=to_csv(result, url),
-                file_name=f"{base}.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
-
-        if dl_md:
-            dl_cols[2].download_button(
-                label="Download Markdown",
-                data=to_markdown(result, url),
-                file_name=f"{base}.md",
-                mime="text/markdown",
-                use_container_width=True,
-            )
+        if report_type == "Technical IOC Report":
+            if dl_csv:
+                dl_cols[1].download_button(
+                    label="Download CSV",
+                    data=to_csv(result, url),
+                    file_name="iocs.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+            if dl_md:
+                dl_cols[2].download_button(
+                    label="Download Markdown",
+                    data=to_markdown(result, url),
+                    file_name="iocs.md",
+                    mime="text/markdown",
+                    use_container_width=True,
+                )
