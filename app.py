@@ -20,6 +20,7 @@ from scraper_bot import (
     to_csv,
     to_markdown,
 )
+from cache import get_cached, save_cache
 
 # ---------------------------------------------------------------------------
 # Auth — API key gate
@@ -144,6 +145,12 @@ with st.sidebar:
     dl_json = st.checkbox("JSON", value=True)
     dl_csv = st.checkbox("CSV", value=True)
     dl_md = st.checkbox("Markdown", value=True)
+
+    force_rerun = st.checkbox(
+        "Force re-run (bypass cache)",
+        value=False,
+        help="Results are cached for 7 days. Check this to force a fresh analysis.",
+    )
 
     st.divider()
     run_button = st.button("Run IOC Hunter", type="primary", use_container_width=True)
@@ -472,81 +479,100 @@ if run_button:
         st.stop()
 
     result = None
+    from_cache = False
 
-    with st.status("Running IOC Hunter...", expanded=True) as status:
-        if mode == "Paste Text":
-            url = source_label_input.strip() or "pasted-text"
-            scraped = {
-                "url": url,
-                "title": source_label_input.strip() or "Pasted Text",
-                "meta_description": "",
-                "text": pasted_text.strip()[:60000],
+    # Check cache first (only for URL mode — pasted text is never cached)
+    if mode == "Scrape URL" and not force_rerun:
+        cached_url = url_input.strip()
+        if not cached_url.startswith(("http://", "https://")):
+            cached_url = "https://" + cached_url
+        cached = get_cached(cached_url, report_type)
+        if cached:
+            result = cached
+            from_cache = True
+
+    if from_cache:
+        st.success("Loaded from cache (analysis within the last 7 days). Check **Force re-run** to refresh.")
+        url = cached_url
+    else:
+        with st.status("Running IOC Hunter...", expanded=True) as status:
+            if mode == "Paste Text":
+                url = source_label_input.strip() or "pasted-text"
+                scraped = {
+                    "url": url,
+                    "title": source_label_input.strip() or "Pasted Text",
+                    "meta_description": "",
+                    "text": pasted_text.strip()[:60000],
+                }
+                st.write(f"Loaded pasted text — **{len(scraped['text']):,}** characters")
+            else:
+                url = url_input.strip()
+                if not url.startswith(("http://", "https://")):
+                    url = "https://" + url
+
+                st.write(f"Scraping `{url}`...")
+                try:
+                    result_holder = {}
+
+                    def run_scrape():
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        try:
+                            result_holder["data"] = loop.run_until_complete(scrape_page(url))
+                        except Exception as e:
+                            result_holder["error"] = e
+                        finally:
+                            loop.close()
+
+                    t = threading.Thread(target=run_scrape)
+                    t.start()
+                    t.join()
+
+                    if "error" in result_holder:
+                        raise result_holder["error"]
+                    scraped = result_holder["data"]
+                except Exception as e:
+                    st.error(f"Scraping failed: {e}")
+                    st.stop()
+
+                st.write(
+                    f"Scraped **{scraped['title']}** — "
+                    f"{len(scraped['text']):,} characters"
+                )
+
+            # Regex pre-extraction only needed for technical/hunt reports
+            pre = {}
+            if report_type in ("Technical IOC Report", "Threat Hunt Report"):
+                st.write("Running regex pre-extraction...")
+                pre = pre_extract_iocs(scraped["text"])
+                total_candidates = sum(len(v) for v in pre.values())
+                st.write(
+                    f"Found **{total_candidates}** IOC candidates across "
+                    f"**{len(pre)}** types"
+                )
+
+            report_labels = {
+                "Technical IOC Report": "technical IOC extraction",
+                "Threat Hunt Report": "threat hunt playbook",
+                "Executive Report": "executive briefing",
             }
-            st.write(f"Loaded pasted text — **{len(scraped['text']):,}** characters")
-        else:
-            url = url_input.strip()
-            if not url.startswith(("http://", "https://")):
-                url = "https://" + url
-
-            st.write(f"Scraping `{url}`...")
+            st.write(f"Sending to Claude for {report_labels[report_type]}...")
             try:
-                result_holder = {}
-
-                def run_scrape():
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    try:
-                        result_holder["data"] = loop.run_until_complete(scrape_page(url))
-                    except Exception as e:
-                        result_holder["error"] = e
-                    finally:
-                        loop.close()
-
-                t = threading.Thread(target=run_scrape)
-                t.start()
-                t.join()
-
-                if "error" in result_holder:
-                    raise result_holder["error"]
-                scraped = result_holder["data"]
+                if report_type == "Technical IOC Report":
+                    result = analyze_iocs_with_claude(scraped, pre, context_input.strip())
+                elif report_type == "Threat Hunt Report":
+                    result = analyze_threat_hunt_with_claude(scraped, pre, context_input.strip())
+                else:
+                    result = analyze_executive_with_claude(scraped, context_input.strip())
             except Exception as e:
-                st.error(f"Scraping failed: {e}")
+                st.error(f"Claude analysis failed: {e}")
                 st.stop()
 
-            st.write(
-                f"Scraped **{scraped['title']}** — "
-                f"{len(scraped['text']):,} characters"
-            )
+            # Save to cache (URL mode only)
+            if mode == "Scrape URL":
+                save_cache(url, report_type, result)
 
-        # Regex pre-extraction only needed for technical/hunt reports
-        pre = {}
-        if report_type in ("Technical IOC Report", "Threat Hunt Report"):
-            st.write("Running regex pre-extraction...")
-            pre = pre_extract_iocs(scraped["text"])
-            total_candidates = sum(len(v) for v in pre.values())
-            st.write(
-                f"Found **{total_candidates}** IOC candidates across "
-                f"**{len(pre)}** types"
-            )
-
-        report_labels = {
-            "Technical IOC Report": "technical IOC extraction",
-            "Threat Hunt Report": "threat hunt playbook",
-            "Executive Report": "executive briefing",
-        }
-        st.write(f"Sending to Claude for {report_labels[report_type]}...")
-        try:
-            if report_type == "Technical IOC Report":
-                result = analyze_iocs_with_claude(scraped, pre, context_input.strip())
-            elif report_type == "Threat Hunt Report":
-                result = analyze_threat_hunt_with_claude(scraped, pre, context_input.strip())
-            else:
-                result = analyze_executive_with_claude(scraped, context_input.strip())
-        except Exception as e:
-            st.error(f"Claude analysis failed: {e}")
-            st.stop()
-
-        status.update(label="Analysis complete!", state="complete", expanded=False)
+            status.update(label="Analysis complete!", state="complete", expanded=False)
 
     if report_type == "Technical IOC Report":
         render_results(result, url)
