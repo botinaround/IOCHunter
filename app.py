@@ -8,6 +8,7 @@ import threading
 import json
 import datetime
 import os
+import hashlib
 import yaml
 import streamlit as st
 import streamlit_authenticator as stauth
@@ -54,67 +55,54 @@ authenticator = stauth.Authenticate(
 with open(CONFIG_PATH, "w") as f:
     yaml.dump(config, f, default_flow_style=False)
 
-# Gate the rest of the app
-if not st.session_state.get("authentication_status"):
+# ---------------------------------------------------------------------------
+# Access key helpers (for key-tier login)
+# ---------------------------------------------------------------------------
+
+def _valid_access_keys() -> set:
+    raw = os.environ.get("IOC_HUNTER_API_KEYS", "")
+    return {k.strip() for k in raw.split(",") if k.strip()}
+
+def _check_access_key(key: str) -> bool:
+    valid = _valid_access_keys()
+    if not valid:
+        return False
+    key_hash = hashlib.sha256(key.encode()).hexdigest()
+    return any(hashlib.sha256(v.encode()).hexdigest() == key_hash for v in valid)
+
+# ---------------------------------------------------------------------------
+# Login page
+# ---------------------------------------------------------------------------
+
+if not st.session_state.get("authentication_status") and not st.session_state.get("key_authenticated"):
+
     st.markdown("""
     <style>
         [data-testid="stSidebar"] {display: none;}
         .login-container {
-            max-width: 480px;
-            margin: 60px auto 0 auto;
-            padding: 48px 40px;
+            max-width: 500px;
+            margin: 48px auto 0 auto;
+            padding: 40px;
             background: #0e1117;
             border: 1px solid #2d2d2d;
             border-radius: 12px;
         }
-        .login-logo {
-            font-size: 52px;
-            text-align: center;
-            margin-bottom: 8px;
-        }
+        .login-logo { font-size: 52px; text-align: center; margin-bottom: 8px; }
         .login-title {
-            font-size: 32px;
-            font-weight: 700;
-            text-align: center;
-            color: #ffffff;
-            margin: 0;
-            letter-spacing: -0.5px;
+            font-size: 32px; font-weight: 700; text-align: center;
+            color: #ffffff; margin: 0; letter-spacing: -0.5px;
         }
         .login-subtitle {
-            text-align: center;
-            color: #8b8b8b;
-            font-size: 15px;
-            margin-top: 6px;
-            margin-bottom: 32px;
+            text-align: center; color: #8b8b8b;
+            font-size: 15px; margin-top: 6px; margin-bottom: 28px;
         }
-        .login-divider {
-            border: none;
-            border-top: 1px solid #2d2d2d;
-            margin: 28px 0;
-        }
-        .login-features {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-            margin-bottom: 32px;
-        }
-        .login-feature {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            color: #c0c0c0;
-            font-size: 14px;
-        }
-        .login-feature-icon {
-            font-size: 18px;
-            width: 28px;
-            text-align: center;
-        }
-        .login-footer {
-            text-align: center;
-            color: #555;
-            font-size: 12px;
-            margin-top: 28px;
+        .login-divider { border: none; border-top: 1px solid #2d2d2d; margin: 24px 0; }
+        .login-features { display: flex; flex-direction: column; gap: 10px; margin-bottom: 28px; }
+        .login-feature { display: flex; align-items: center; gap: 12px; color: #c0c0c0; font-size: 14px; }
+        .login-feature-icon { font-size: 18px; width: 28px; text-align: center; }
+        .tier-label {
+            font-size: 11px; font-weight: 600; letter-spacing: 0.08em;
+            text-transform: uppercase; color: #8b8b8b; margin-bottom: 8px;
         }
     </style>
 
@@ -124,29 +112,43 @@ if not st.session_state.get("authentication_status"):
         <p class="login-subtitle">AI-Powered Threat Intelligence Platform</p>
         <hr class="login-divider"/>
         <div class="login-features">
-            <div class="login-feature">
-                <span class="login-feature-icon">🎯</span>
-                <span>Extract IOCs from any threat intelligence source</span>
-            </div>
-            <div class="login-feature">
-                <span class="login-feature-icon">🧠</span>
-                <span>Claude AI-powered deep analysis with confidence scoring</span>
-            </div>
-            <div class="login-feature">
-                <span class="login-feature-icon">🕵️</span>
-                <span>Threat hunt playbooks with detection queries</span>
-            </div>
-            <div class="login-feature">
-                <span class="login-feature-icon">📊</span>
-                <span>Executive reports for leadership briefings</span>
-            </div>
+            <div class="login-feature"><span class="login-feature-icon">🎯</span><span>Extract IOCs from any threat intelligence source</span></div>
+            <div class="login-feature"><span class="login-feature-icon">🧠</span><span>AI-powered deep analysis with confidence scoring</span></div>
+            <div class="login-feature"><span class="login-feature-icon">🕵️</span><span>Threat hunt playbooks with detection queries</span></div>
+            <div class="login-feature"><span class="login-feature-icon">📊</span><span>Executive reports for leadership briefings</span></div>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # Center the login button
     _, center_col, _ = st.columns([1, 2, 1])
     with center_col:
+
+        # --- Access Key login (uses server API key) ---
+        st.markdown('<p class="tier-label">🔑 Access Key — Includes API Credits</p>', unsafe_allow_html=True)
+        with st.form("key_login_form"):
+            access_key_input = st.text_input(
+                "Access Key",
+                type="password",
+                placeholder="key-...",
+                label_visibility="collapsed",
+            )
+            key_submit = st.form_submit_button("Login with Access Key", use_container_width=True, type="primary")
+
+        if key_submit:
+            if _check_access_key(access_key_input):
+                st.session_state["key_authenticated"] = True
+                st.session_state["authentication_status"] = True
+                st.session_state["name"] = "Key User"
+                st.session_state["username"] = "key_user"
+                st.session_state["access_tier"] = "key"
+                st.rerun()
+            else:
+                st.error("Invalid access key.")
+
+        st.markdown('<hr class="login-divider"/>', unsafe_allow_html=True)
+
+        # --- Google OAuth login (user must supply own API key) ---
+        st.markdown('<p class="tier-label">🌐 Google Login — Bring Your Own API Key</p>', unsafe_allow_html=True)
         try:
             authenticator.experimental_guest_login(
                 "Sign in with Google",
@@ -154,22 +156,27 @@ if not st.session_state.get("authentication_status"):
                 oauth2=config["oauth2"],
                 use_container_width=True,
             )
+            # Google OAuth sets authentication_status — mark tier
+            if st.session_state.get("authentication_status") and not st.session_state.get("access_tier"):
+                st.session_state["access_tier"] = "google"
         except Exception as e:
-            st.error(f"Login error: {e}")
+            st.error(f"Google login error: {e}")
 
-    st.markdown("""
-    <p style="text-align:center; color:#555; font-size:12px; margin-top:24px;">
-        Access is restricted to authorized users only.<br/>
-        Contact your administrator if you need access.
-    </p>
-    """, unsafe_allow_html=True)
+        st.markdown("""
+        <p style="text-align:center; color:#555; font-size:11px; margin-top:20px;">
+            Don't have an access key? Sign in with Google and use your own API key.<br/>
+            Contact your administrator to request an access key.
+        </p>
+        """, unsafe_allow_html=True)
 
-    _, link_col, _ = st.columns([1, 2, 1])
-    with link_col:
         if st.button("Privacy Policy", use_container_width=True, type="secondary"):
             st.switch_page("pages/2_Privacy_Policy.py")
 
     st.stop()
+
+# Set access tier for Google OAuth users who logged in without a key
+if st.session_state.get("authentication_status") and not st.session_state.get("access_tier"):
+    st.session_state["access_tier"] = "google"
 
 # ---------------------------------------------------------------------------
 # Sidebar — inputs
@@ -231,6 +238,8 @@ with st.sidebar:
     st.divider()
     st.subheader("AI Provider")
 
+    is_key_tier = st.session_state.get("access_tier") == "key"
+
     ai_provider = st.radio(
         "Provider",
         ["Anthropic (Claude)", "OpenAI (GPT-4o)"],
@@ -239,30 +248,27 @@ with st.sidebar:
     )
 
     provider_key = "anthropic" if ai_provider.startswith("Anthropic") else "openai"
-    key_placeholder = "sk-ant-..." if provider_key == "anthropic" else "sk-..."
-    key_help = (
-        "Your Anthropic API key from console.anthropic.com"
-        if provider_key == "anthropic"
-        else "Your OpenAI API key from platform.openai.com"
-    )
 
-    user_api_key = st.text_input(
-        "API Key",
-        type="password",
-        placeholder=key_placeholder,
-        help=key_help + ". Stored in your session only — never saved to disk.",
-    )
-
-    if not user_api_key:
-        env_key = (
-            os.environ.get("ANTHROPIC_API_KEY", "")
+    if is_key_tier:
+        # Key-tier users always use the server API key
+        user_api_key = ""
+        st.success("✅ API credits included with your access key.")
+    else:
+        # Google-tier users must provide their own key
+        key_placeholder = "sk-ant-..." if provider_key == "anthropic" else "sk-..."
+        key_help = (
+            "Your Anthropic API key from console.anthropic.com"
             if provider_key == "anthropic"
-            else os.environ.get("OPENAI_API_KEY", "")
+            else "Your OpenAI API key from platform.openai.com"
         )
-        if env_key:
-            st.caption("Using server API key.")
-        else:
-            st.warning("Enter an API key to run analysis.")
+        user_api_key = st.text_input(
+            "Your API Key",
+            type="password",
+            placeholder=key_placeholder,
+            help=key_help + " — stored in your session only, never saved to disk.",
+        )
+        if not user_api_key:
+            st.warning("Enter your API key to run analysis.")
 
     st.divider()
     st.subheader("Output Options")
@@ -281,8 +287,17 @@ with st.sidebar:
     run_button = st.button("Run IOC Hunter", type="primary", use_container_width=True)
 
     st.divider()
-    st.caption(f"Signed in as **{st.session_state.get('name', '')}**")
-    authenticator.logout(button_name="Logout", location="sidebar", use_container_width=True)
+    tier_label = "🔑 Key Access" if is_key_tier else "🌐 Google"
+    st.caption(f"Signed in as **{st.session_state.get('name', '')}** ({tier_label})")
+
+    if is_key_tier:
+        if st.button("Logout", use_container_width=True):
+            for k in ["key_authenticated", "authentication_status", "access_tier",
+                      "name", "username", "result", "result_url", "result_report_type"]:
+                st.session_state.pop(k, None)
+            st.rerun()
+    else:
+        authenticator.logout(button_name="Logout", location="sidebar", use_container_width=True)
 
 # ---------------------------------------------------------------------------
 # Helper — render IOC tables
