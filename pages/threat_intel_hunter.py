@@ -17,6 +17,7 @@ from scraper_bot import (
     analyze_executive_with_claude,
     to_csv,
     to_markdown,
+    to_pdf_executive,
 )
 from cache import get_cached, save_cache
 
@@ -573,3 +574,16 @@ if result:
                     mime="text/markdown",
                     use_container_width=True,
                 )
+
+        elif saved_report_type == "Executive Report":
+            try:
+                pdf_bytes = to_pdf_executive(result, url)
+                dl_cols[1].download_button(
+                    label="Download PDF",
+                    data=pdf_bytes,
+                    file_name="executive_report.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
+            except Exception as e:
+                dl_cols[1].error(f"PDF generation failed: {e}")

@@ -475,6 +475,233 @@ IMPORTANT:
 # Output formatters
 # ---------------------------------------------------------------------------
 
+def to_pdf_executive(data: dict, source_url: str) -> bytes:
+    """Render the executive report as a PDF and return raw bytes."""
+    import io
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import cm
+    from reportlab.lib.colors import HexColor, white, black
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.enums import TA_LEFT, TA_CENTER
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+    )
+
+    W, H = A4
+    ts = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+
+    # Colour palette
+    DARK_BG   = HexColor("#0e1117")
+    ACCENT    = HexColor("#4a90d9")
+    LIGHT_TXT = HexColor("#c0c0c0")
+    MUTED_TXT = HexColor("#8b8b8b")
+    RISK_COLORS = {
+        "critical": HexColor("#e74c3c"),
+        "high":     HexColor("#e67e22"),
+        "medium":   HexColor("#f1c40f"),
+        "low":      HexColor("#2ecc71"),
+    }
+
+    # Styles
+    def _style(name, **kwargs):
+        defaults = dict(fontName="Helvetica", fontSize=10, leading=14,
+                        textColor=black, spaceAfter=4)
+        defaults.update(kwargs)
+        return ParagraphStyle(name, **defaults)
+
+    S = {
+        "h1":      _style("h1",   fontName="Helvetica-Bold", fontSize=22, leading=26,
+                          textColor=DARK_BG, spaceAfter=6),
+        "h2":      _style("h2",   fontName="Helvetica-Bold", fontSize=13, leading=17,
+                          textColor=DARK_BG, spaceAfter=4),
+        "body":    _style("body", fontSize=10, leading=14, textColor=HexColor("#222222"),
+                          spaceAfter=4),
+        "muted":   _style("muted",fontSize=8,  leading=12, textColor=MUTED_TXT),
+        "bullet":  _style("bullet",fontSize=10, leading=14, textColor=HexColor("#222222"),
+                          leftIndent=12, spaceAfter=3),
+        "caption": _style("caption",fontName="Helvetica-Bold", fontSize=9, leading=12,
+                          textColor=ACCENT),
+    }
+
+    def safe(text):
+        """Strip characters that confuse ReportLab's XML parser."""
+        if not text:
+            return ""
+        return (str(text)
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;"))
+
+    story = []
+
+    # ── Header banner ────────────────────────────────────────────────────────
+    header_data = [[
+        Paragraph("<font color='#ffffff'><b>🔍 IOC Hunter</b></font>",
+                  _style("hdr", fontName="Helvetica-Bold", fontSize=11,
+                         textColor=white, alignment=TA_LEFT)),
+        Paragraph(f"<font color='#8b8b8b'>Executive Intelligence Report &nbsp;·&nbsp; {ts}</font>",
+                  _style("hdr2", fontSize=8, textColor=MUTED_TXT, alignment=TA_LEFT)),
+    ]]
+    header_tbl = Table(header_data, colWidths=[7*cm, 10.5*cm])
+    header_tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), DARK_BG),
+        ("VALIGN",     (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING",    (0, 0), (-1, -1), 10),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 14),
+    ]))
+    story.append(header_tbl)
+    story.append(Spacer(1, 0.5*cm))
+
+    # ── Headline ─────────────────────────────────────────────────────────────
+    headline = safe(data.get("headline", "Executive Threat Intelligence Report"))
+    story.append(Paragraph(headline, S["h1"]))
+    story.append(HRFlowable(width="100%", thickness=1, color=HexColor("#dddddd")))
+    story.append(Spacer(1, 0.3*cm))
+
+    # ── Risk badge + key metrics table ───────────────────────────────────────
+    risk       = (data.get("risk_level") or "unknown").lower()
+    risk_color = RISK_COLORS.get(risk, HexColor("#888888"))
+    risk_label = risk.upper()
+
+    metrics = [
+        ["Risk Level", "Threat Actor", "Attack Type"],
+        [
+            Paragraph(f"<b><font color='#ffffff'> {risk_label} </font></b>",
+                      _style("risk", fontName="Helvetica-Bold", fontSize=11,
+                             textColor=white, alignment=TA_CENTER)),
+            Paragraph(safe(data.get("threat_actor") or "Unknown"), S["body"]),
+            Paragraph(safe(data.get("attack_type") or "N/A"), S["body"]),
+        ],
+    ]
+    metrics_tbl = Table(metrics, colWidths=[5.8*cm, 5.8*cm, 5.9*cm])
+    metrics_tbl.setStyle(TableStyle([
+        ("FONTNAME",      (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE",      (0, 0), (-1, 0), 8),
+        ("TEXTCOLOR",     (0, 0), (-1, 0), MUTED_TXT),
+        ("BACKGROUND",    (0, 1), (0, 1),  risk_color),
+        ("BACKGROUND",    (1, 1), (-1, 1), HexColor("#f5f5f5")),
+        ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING",    (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("GRID",          (0, 0), (-1, -1), 0.5, HexColor("#dddddd")),
+        ("ROWBACKGROUNDS", (0, 0), (-1, 0), [HexColor("#f0f0f0")]),
+    ]))
+    story.append(metrics_tbl)
+    story.append(Spacer(1, 0.4*cm))
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+    if data.get("summary"):
+        story.append(Paragraph("Summary", S["h2"]))
+        summary_tbl = Table(
+            [[Paragraph(safe(data["summary"]), S["body"])]],
+            colWidths=[W - 4*cm],
+        )
+        summary_tbl.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (-1, -1), HexColor("#eef4fb")),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 10),
+            ("RIGHTPADDING",  (0, 0), (-1, -1), 10),
+            ("TOPPADDING",    (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ("LINEAFTER",     (0, 0), (0, -1),  3, ACCENT),
+        ]))
+        story.append(summary_tbl)
+        story.append(Spacer(1, 0.3*cm))
+
+    # ── Risk justification ────────────────────────────────────────────────────
+    if data.get("risk_justification"):
+        story.append(Paragraph("Risk Justification", S["caption"]))
+        story.append(Paragraph(safe(data["risk_justification"]), S["body"]))
+        story.append(Spacer(1, 0.2*cm))
+
+    # ── Impact & context ─────────────────────────────────────────────────────
+    ctx_rows = []
+    for label, key in [("Affected Sectors", "affected_sectors"),
+                       ("Affected Regions", "affected_regions"),
+                       ("Timeline",         "timeline"),
+                       ("Business Impact",  "business_impact")]:
+        val = data.get(key)
+        if val:
+            if isinstance(val, list):
+                val = ", ".join(val)
+            ctx_rows.append([
+                Paragraph(f"<b>{label}</b>", S["body"]),
+                Paragraph(safe(val), S["body"]),
+            ])
+    if ctx_rows:
+        ctx_tbl = Table(ctx_rows, colWidths=[4.5*cm, 13*cm])
+        ctx_tbl.setStyle(TableStyle([
+            ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+            ("TOPPADDING",    (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LINEBELOW",     (0, 0), (-1, -2), 0.3, HexColor("#eeeeee")),
+        ]))
+        story.append(ctx_tbl)
+        story.append(Spacer(1, 0.3*cm))
+
+    # ── What happened ─────────────────────────────────────────────────────────
+    what = data.get("what_happened", [])
+    if what:
+        story.append(Paragraph("What Happened", S["h2"]))
+        for item in what:
+            story.append(Paragraph(f"• {safe(item)}", S["bullet"]))
+        story.append(Spacer(1, 0.3*cm))
+
+    # ── Recommended actions ───────────────────────────────────────────────────
+    actions = data.get("recommended_actions", [])
+    if actions:
+        story.append(Paragraph("Recommended Actions", S["h2"]))
+        priority_labels = {
+            "immediate":  ("🔴 Immediate",   HexColor("#fdecea")),
+            "short-term": ("🟡 Short-Term",  HexColor("#fefae3")),
+            "long-term":  ("🟢 Long-Term",   HexColor("#e9f7ef")),
+        }
+        for p_key, (p_label, p_bg) in priority_labels.items():
+            group = [a for a in actions if a.get("priority") == p_key]
+            if not group:
+                continue
+            story.append(Paragraph(p_label, _style("plabel", fontName="Helvetica-Bold",
+                                                    fontSize=9, textColor=HexColor("#333333"),
+                                                    spaceAfter=2)))
+            for a in group:
+                story.append(Paragraph(f"• {safe(a.get('action',''))}", S["bullet"]))
+            story.append(Spacer(1, 0.15*cm))
+        story.append(Spacer(1, 0.15*cm))
+
+    # ── Key takeaways ─────────────────────────────────────────────────────────
+    takeaways = data.get("key_takeaways", [])
+    if takeaways:
+        story.append(Paragraph("Key Takeaways", S["h2"]))
+        for item in takeaways:
+            story.append(Paragraph(f"• {safe(item)}", S["bullet"]))
+        story.append(Spacer(1, 0.3*cm))
+
+    # ── Questions for your security team ──────────────────────────────────────
+    questions = data.get("questions_to_ask_your_security_team", [])
+    if questions:
+        story.append(Paragraph("Questions for Your Security Team", S["h2"]))
+        for i, q in enumerate(questions, 1):
+            story.append(Paragraph(f"{i}.  {safe(q)}", S["bullet"]))
+        story.append(Spacer(1, 0.3*cm))
+
+    # ── Footer ────────────────────────────────────────────────────────────────
+    story.append(HRFlowable(width="100%", thickness=0.5, color=HexColor("#dddddd")))
+    story.append(Spacer(1, 0.2*cm))
+    story.append(Paragraph(f"Source: {safe(source_url)}", S["muted"]))
+    story.append(Paragraph("IOC Hunter · Internal Use Only · AI-generated — verify before acting", S["muted"]))
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        leftMargin=2*cm, rightMargin=2*cm,
+        topMargin=1.5*cm, bottomMargin=1.5*cm,
+    )
+    doc.build(story)
+    return buf.getvalue()
+
+
 def print_ioc_report(data: dict, source_url: str):
     """Pretty-print the IOC report to the terminal."""
     ts = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
