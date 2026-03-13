@@ -16,8 +16,8 @@ if not st.session_state.get("authentication_status"):
 
 username = st.session_state.get("username", "anonymous")
 
-st.title("🗄️ Cache Viewer")
-st.caption("Browse, inspect, and manage cached analysis results.")
+st.title("🗄️ Historical Runs")
+st.caption("Browse, reload, and manage your past analysis results.")
 
 # --- Stats ---
 stats = get_stats(username)
@@ -94,11 +94,24 @@ else:
 
                 with tab_json:
                     st.json(result)
+
+                # Action buttons
+                btn_col1, btn_col2 = st.columns([1, 1])
+                if btn_col1.button("📂 Load into Threat Intel Hunter", key=f"load_{entry['id']}", use_container_width=True, type="primary"):
+                    st.session_state["result"]             = result
+                    st.session_state["result_url"]         = entry["url"]
+                    st.session_state["result_report_type"] = entry["report_type"]
+                    st.switch_page("pages/threat_intel_hunter.py")
+
+                if btn_col2.button("🗑️ Delete", key=f"del_{entry['id']}", use_container_width=True):
+                    delete_entry(entry["id"], username)
+                    st.success("Entry deleted.")
+                    st.rerun()
             else:
-                st.warning("Entry is expired — raw data no longer returned by cache.")
+                st.warning("Entry is expired — result data is no longer available.")
                 st.json({"id": entry["id"], "url": entry["url"], "report_type": entry["report_type"]})
 
-            if st.button(f"🗑️ Delete this entry", key=f"del_{entry['id']}"):
-                delete_entry(entry["id"], username)
-                st.success("Entry deleted.")
-                st.rerun()
+                if st.button("🗑️ Delete", key=f"del_{entry['id']}", use_container_width=True):
+                    delete_entry(entry["id"], username)
+                    st.success("Entry deleted.")
+                    st.rerun()
